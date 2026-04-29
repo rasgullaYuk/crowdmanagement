@@ -762,6 +762,48 @@ def extract_frame_at_timestamp(video_path, timestamp_str):
         print(f"Frame extraction error: {e}")
         return None
 
+
+def _is_mmss_timestamp(value: str) -> bool:
+    return bool(re.match(r"^\d{1,2}:\d{2}$", value or ""))
+
+
+def _persist_anomalies_from_analysis(analysis, zone_id, video_path=None):
+    anomalies = analysis.get("anomalies", []) if analysis else []
+    if not anomalies:
+        return []
+
+    persisted = []
+    for raw in anomalies:
+        anomaly = dict(raw) if isinstance(raw, dict) else {"type": "other", "description": str(raw)}
+        video_timestamp = anomaly.get("timestamp")
+
+        if video_timestamp and _is_mmss_timestamp(video_timestamp):
+            anomaly["video_timestamp"] = video_timestamp
+
+        anomaly["timestamp"] = analysis.get("timestamp", datetime.utcnow().isoformat() + "Z")
+        anomaly["zone_id"] = zone_id
+        anomaly["location"] = CAMERA_ENDPOINTS.get(zone_id, {}).get("name", zone_id)
+        anomaly["cameraId"] = CAMERA_ENDPOINTS.get(zone_id, {}).get("id", zone_id)
+        anomaly["status"] = "active"
+
+        confidence = anomaly.get("confidence", 0)
+        anomaly["severity"] = "high" if confidence >= 85 else "medium"
+        anomaly["id"] = str(uuid.uuid4())
+
+        if video_path and anomaly.get("video_timestamp"):
+            frame = extract_frame_at_timestamp(video_path, anomaly["video_timestamp"])
+            if frame is not None:
+                frame_filename = f"anomaly_{zone_id}_{uuid.uuid4().hex[:8]}.jpg"
+                frame_path = os.path.join(app.config["UPLOAD_FOLDER"], frame_filename)
+                cv2.imwrite(frame_path, frame)
+                anomaly["image_url"] = f"/uploads/{frame_filename}"
+                anomaly["imageUrl"] = f"/uploads/{frame_filename}"
+
+        PERSISTENT_ANOMALIES.append(anomaly.copy())
+        persisted.append(anomaly)
+
+    return persisted
+
 def analyze_video_final(video_path, zone_id):
     """
     FINAL ROBUST video analysis - processes entire video, checks ALL missing persons.
@@ -937,6 +979,25 @@ def analyze_video_with_gemini(video_path, zone_id):
         import cv2
         import numpy as np
         
+        def _extract_response_text(resp):
+            """
+            Best-effort extraction of returned text across library/model variants.
+            """
+            t = getattr(resp, "text", None)
+            if isinstance(t, str) and t.strip():
+                return t
+            try:
+                candidates = getattr(resp, "candidates", None) or []
+                if candidates:
+                    content = getattr(candidates[0], "content", None)
+                    parts = getattr(content, "parts", None) or []
+                    joined = "".join([getattr(p, "text", "") for p in parts if getattr(p, "text", "")])
+                    if joined.strip():
+                        return joined
+            except Exception:
+                pass
+            return ""
+        
         # Load API Key
         api_key = get_gemini_key()
         
@@ -947,7 +1008,8 @@ def analyze_video_with_gemini(video_path, zone_id):
                 'density_level': 'Low',
                 'anomalies': [],
                 'description': "Analysis failed: API Key missing",
-                'sentiment': "Unknown"
+                'sentiment': "Unknown",
+                'error': "missing_gemini_api_key"
             }
             
         genai.configure(api_key=api_key)
@@ -965,11 +1027,18 @@ def analyze_video_with_gemini(video_path, zone_id):
 
         if video_file.state.name == "FAILED":
             print("Video processing failed.")
-            return None
+            return {
+                'crowd_count': 0,
+                'density_level': 'Low',
+                'anomalies': [],
+                'description': "Analysis failed: Gemini video processing FAILED",
+                'sentiment': "Unknown",
+                'error': "gemini_video_processing_failed"
+            }
 
         print(" Analyzing...")
-        # Use confirmed working model
-        model = genai.GenerativeModel('models/gemini-1.5-flash')
+        # Use a model that is available for this API key/project
+        model = genai.GenerativeModel('models/gemini-2.5-flash')
         
         # Construct prompt with lost persons
         lost_persons_desc = ""
@@ -996,10 +1065,24 @@ def analyze_video_with_gemini(video_path, zone_id):
         - sentiment (string): "Calm", "Agitated", "Panic", or "Happy".
         """
         
-        response = model.generate_content([video_file, prompt], request_options={"timeout": 600})
+        # Force JSON output so parsing is reliable
+        response = model.generate_content(
+            [video_file, prompt],
+            generation_config={"response_mime_type": "application/json", "temperature": 0.2},
+            request_options={"timeout": 600},
+        )
         
         # Parse JSON from response
-        text = response.text
+        text = _extract_response_text(response)
+        if not text.strip():
+            return {
+                'crowd_count': 0,
+                'density_level': 'Low',
+                'anomalies': [],
+                'description': "Analysis failed: Gemini returned empty response text",
+                'sentiment': "Unknown",
+                'error': "gemini_empty_response"
+            }
         # Extract JSON block if wrapped in markdown
         match = re.search(r'```json\\n(.*?)\\n```', text, re.DOTALL)
         if match:
@@ -1007,7 +1090,17 @@ def analyze_video_with_gemini(video_path, zone_id):
         else:
             json_str = text
             
-        analysis = json.loads(json_str)
+        try:
+            analysis = json.loads(json_str)
+        except Exception as e:
+            return {
+                'crowd_count': 0,
+                'density_level': 'Low',
+                'anomalies': [],
+                'description': "Analysis failed: Could not parse Gemini JSON",
+                'sentiment': "Unknown",
+                'error': f"gemini_json_parse_error: {e}"
+            }
         analysis['timestamp'] = datetime.utcnow().isoformat() + "Z"
         
         # Handle found persons - HYBRID APPROACH
@@ -1093,6 +1186,9 @@ def analyze_video_with_gemini(video_path, zone_id):
         
         # Store in global
         ZONE_ANALYSIS[zone_id] = analysis
+
+        # Persist anomalies for responder dashboards
+        _persist_anomalies_from_analysis(analysis, zone_id, video_path)
         
         # Check for anomalies and send SMS
         if 'anomalies' in analysis and analysis['anomalies']:
@@ -1106,7 +1202,117 @@ def analyze_video_with_gemini(video_path, zone_id):
         
     except Exception as e:
         print(f"Gemini Analysis Error: {e}")
-        return None
+        return {
+            'crowd_count': 0,
+            'density_level': 'Low',
+            'anomalies': [],
+            'description': "Analysis failed: Gemini Analysis Error",
+            'sentiment': "Unknown",
+            'error': str(e)
+        }
+
+
+def analyze_video_with_opencv(video_path, zone_id, max_frames=12):
+    """
+    Lightweight local fallback analysis (no API keys required).
+    Samples a handful of frames and uses OpenCV HOG people detector.
+    """
+    try:
+        import numpy as np
+
+        hog = cv2.HOGDescriptor()
+        hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return {
+                'crowd_count': 0,
+                'density_level': 'Low',
+                'anomalies': [],
+                'description': "Local analysis failed: could not open video",
+                'sentiment': "Unknown",
+                'detection_method': "opencv",
+                'timestamp': datetime.utcnow().isoformat() + "Z",
+                'error': "opencv_video_open_failed"
+            }
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        step = max(1, total_frames // max_frames) if total_frames > 0 else 30
+
+        counts = []
+        frame_idx = 0
+        sampled = 0
+
+        while sampled < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % step == 0:
+                resized = cv2.resize(frame, (640, 480))
+                boxes, _weights = hog.detectMultiScale(
+                    resized, winStride=(8, 8), padding=(4, 4), scale=1.05
+                )
+                counts.append(int(len(boxes)))
+                sampled += 1
+            frame_idx += 1
+
+        cap.release()
+
+        crowd_count = int(round(float(np.mean(counts)))) if counts else 0
+
+        if crowd_count > 100:
+            density_level = "Critical"
+        elif crowd_count > 50:
+            density_level = "High"
+        elif crowd_count > 20:
+            density_level = "Medium"
+        else:
+            density_level = "Low"
+
+        if density_level in ("Critical", "High"):
+            sentiment = "Agitated"
+        elif density_level == "Medium":
+            sentiment = "Busy"
+        else:
+            sentiment = "Calm"
+
+        return {
+            'crowd_count': crowd_count,
+            'density_level': density_level,
+            'anomalies': [],
+            'description': f"Local OpenCV estimate from {len(counts)} sampled frames.",
+            'sentiment': sentiment,
+            'detection_method': "opencv",
+            'timestamp': datetime.utcnow().isoformat() + "Z",
+        }
+    except Exception as e:
+        return {
+            'crowd_count': 0,
+            'density_level': 'Low',
+            'anomalies': [],
+            'description': "Local analysis failed: OpenCV error",
+            'sentiment': "Unknown",
+            'detection_method': "opencv",
+            'timestamp': datetime.utcnow().isoformat() + "Z",
+            'error': str(e),
+        }
+
+
+def analyze_video_hybrid(video_path, zone_id):
+    """
+    Prefer Gemini; fall back to local OpenCV if Gemini fails.
+    """
+    gemini = analyze_video_with_gemini(video_path, zone_id)
+    gemini_error = (gemini or {}).get("error")
+    if (not gemini) or gemini_error:
+        local = analyze_video_with_opencv(video_path, zone_id)
+        local["hybrid_fallback"] = True
+        if gemini_error:
+            local["gemini_error"] = gemini_error
+        return local
+    gemini["detection_method"] = gemini.get("detection_method", "gemini")
+    gemini["hybrid_fallback"] = False
+    return gemini
 
 def fast_continuous_video_processor(video_path, zone_id, stop_flag_dict):
     """
@@ -1374,11 +1580,11 @@ def continuous_video_processor(video_path, zone_id, stop_flag_dict):
         api_key = get_gemini_key()
         
         if not api_key or "PASTE" in api_key:
-            safe_print(f"[{zone_id}] ❌ Gemini API Key not found. Stopping continuous analysis.")
-            return
+            safe_print(f"[{zone_id}] ⚠️ Gemini API Key not found. Falling back to local OpenCV continuous mode.")
+            return fast_continuous_video_processor(video_path, zone_id, stop_flag_dict)
         
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('models/gemini-2.0-flash-exp')  # Latest fastest model
+        model = genai.GenerativeModel('models/gemini-2.5-flash')  # widely available
         
         # Open video file
         cap = cv2.VideoCapture(video_path)
@@ -1476,7 +1682,7 @@ def continuous_video_processor(video_path, zone_id, stop_flag_dict):
                                         # Send SMS
                                         send_sms_alert("+917337743545", f"FOUND: {matched_person['name']} located at {found_match['location']}")
                 except Exception as e:
-                    # safe_print(f"[{zone_id}] Face Rec Error: {e}")
+                    # Face recognition is optional; ignore failures
                     pass
 
                 try:
@@ -1780,6 +1986,7 @@ def upload_video_for_analysis():
             
         file = request.files['video']
         zone_id = request.form.get('zone_id', 'manual_upload')
+        detect_anomalies = request.form.get('detect_anomalies', 'false').lower() == 'true'
         
         if file.filename == '':
             print("❌ Empty filename")
@@ -1858,6 +2065,24 @@ def upload_video_for_analysis():
                     analysis = None
                 
             if analysis:
+                analysis.setdefault('anomalies', [])
+
+                if detect_anomalies:
+                    anomaly_analysis = analyze_video_with_gemini(filepath, zone_id)
+                    if anomaly_analysis:
+                        analysis['anomalies'] = anomaly_analysis.get('anomalies', [])
+                        analysis['sentiment'] = anomaly_analysis.get('sentiment', analysis.get('sentiment'))
+                        analysis['description'] = anomaly_analysis.get('description', analysis.get('description'))
+                        analysis['anomaly_detection'] = {
+                            "status": "ok",
+                            "anomalies": len(analysis['anomalies']),
+                            "detection_method": anomaly_analysis.get('detection_method', 'gemini')
+                        }
+                        gemini_error = anomaly_analysis.get('error')
+                        if gemini_error:
+                            analysis['anomaly_detection']["status"] = "error"
+                            analysis['anomaly_detection']["error"] = gemini_error
+
                 update_zone_history(zone_id, analysis)
                 return jsonify({
                     "message": "Video analysis complete",
@@ -1981,7 +2206,7 @@ def upload_food_court_video():
         })
     else:
         # One-time analysis (blocking)
-        analysis = analyze_video_with_gemini(save_path, 'food_court')
+        analysis = analyze_video_hybrid(save_path, 'food_court')
         update_zone_history('food_court', analysis)
         
         return jsonify({
@@ -2026,7 +2251,7 @@ def upload_parking_video():
     video.save(save_path)
     
     continuous_mode = request.form.get('continuous', 'true').lower() == 'true'
-    analysis = analyze_video_with_gemini(save_path, 'parking')
+    analysis = analyze_video_hybrid(save_path, 'parking')
     update_zone_history('parking', analysis)
     
     if continuous_mode:
@@ -2081,7 +2306,7 @@ def upload_main_stage_video():
     video.save(save_path)
     
     continuous_mode = request.form.get('continuous', 'true').lower() == 'true'
-    analysis = analyze_video_with_gemini(save_path, 'main_stage')
+    analysis = analyze_video_hybrid(save_path, 'main_stage')
     update_zone_history('main_stage', analysis)
     
     if continuous_mode:
@@ -2136,7 +2361,7 @@ def upload_testing_video():
     video.save(save_path)
     
     continuous_mode = request.form.get('continuous', 'true').lower() == 'true'
-    analysis = analyze_video_with_gemini(save_path, 'testing')
+    analysis = analyze_video_hybrid(save_path, 'testing')
     update_zone_history('testing', analysis)
     
     if continuous_mode:
