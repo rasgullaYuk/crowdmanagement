@@ -1,6 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { DatabaseService, isMissingSupabaseConfigError } from "@/lib/database"
 
+export const dynamic = "force-dynamic"
+
 const handleApiError = (context: string, error: unknown) => {
   console.error(context, error)
 

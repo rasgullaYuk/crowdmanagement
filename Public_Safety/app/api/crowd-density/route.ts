@@ -1,6 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { DatabaseService, isMissingSupabaseConfigError } from "@/lib/database"
 
+export const dynamic = "force-dynamic"
+
 const handleApiError = (error: unknown) => {
   console.error("Error fetching crowd density:", error)
 
