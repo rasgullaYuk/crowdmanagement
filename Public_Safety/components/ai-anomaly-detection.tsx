@@ -9,7 +9,18 @@ import { Eye, AlertTriangle, Brain, Camera, MapPin, Clock, X, Play, Pause } from
 
 interface AnomalyDetection {
   id: string
-  type: "crowd_behavior" | "abandoned_object" | "violence" | "unusual_movement" | "gathering"
+  type:
+    | "crowd_behavior"
+    | "abandoned_object"
+    | "violence"
+    | "unusual_movement"
+    | "gathering"
+    | "fire"
+    | "medical_emergency"
+    | "panic"
+    | "suspicious_behavior"
+    | "unauthorized_access"
+    | "other"
   confidence: number
   location: string
   cameraId: string
@@ -40,7 +51,7 @@ export function AIAnomalyDetection({ context = "user" }: AIAnomalyDetectionProps
           ...a,
           timestamp: new Date(a.timestamp || Date.now()),
           videoTimestamp: a.video_timestamp,
-          imageUrl: a.imageUrl || "/placeholder.svg",
+          imageUrl: a.image_url || a.imageUrl || "/placeholder.svg",
           // Ensure other fields are present
           id: a.id || Math.random().toString(),
           type: a.type || "other",
@@ -67,8 +78,13 @@ export function AIAnomalyDetection({ context = "user" }: AIAnomalyDetectionProps
 
   const getAnomalyColor = (type: string) => {
     switch (type) {
+      case "fire":
+        return "text-destructive"
       case "violence":
         return "text-destructive"
+      case "medical_emergency":
+      case "panic":
+        return "text-warning"
       case "abandoned_object":
         return "text-warning"
       case "crowd_behavior":
@@ -84,8 +100,13 @@ export function AIAnomalyDetection({ context = "user" }: AIAnomalyDetectionProps
 
   const getAnomalyBadge = (type: string) => {
     switch (type) {
+      case "fire":
+        return "destructive"
       case "violence":
         return "destructive"
+      case "medical_emergency":
+      case "panic":
+        return "secondary"
       case "abandoned_object":
         return "secondary"
       case "crowd_behavior":

@@ -54,6 +54,10 @@ export default function UserDashboard() {
     const [uploadStatus, setUploadStatus] = useState<string>("")
     const [previewUrl, setPreviewUrl] = useState<string | null>(null)
     const [previewStats, setPreviewStats] = useState<string>("Initializing...")
+    const [uploadFile, setUploadFile] = useState<File | null>(null)
+    const [uploadZoneId, setUploadZoneId] = useState<string>("testing")
+    const [detectAnomalies, setDetectAnomalies] = useState(false)
+    const [uploadResult, setUploadResult] = useState<any | null>(null)
 
     // Load persisted analysis results on mount
     useEffect(() => {
@@ -236,6 +240,82 @@ export default function UserDashboard() {
         }, 2000)
     }
 
+    const handleUploadFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0]
+        if (!file) return
+        setUploadFile(file)
+        setPreviewUrl(URL.createObjectURL(file))
+        setUploadStatus("Ready to analyze")
+        setUploadResult(null)
+        setPreviewStats(`Selected: ${file.name}`)
+    }
+
+    const handleAnalyzeUpload = async () => {
+        if (!uploadFile) {
+            toast.error("Please select a video file first.")
+            return
+        }
+
+        setIsUploading(true)
+        setUploadStatus("Uploading and analyzing...")
+        setUploadProgress(0)
+
+        try {
+            const formData = new FormData()
+            formData.append("video", uploadFile)
+            formData.append("zone_id", uploadZoneId)
+            if (detectAnomalies) {
+                formData.append("detect_anomalies", "true")
+            }
+
+            const res = await fetch("http://localhost:5000/api/cameras/upload-video", {
+                method: "POST",
+                body: formData,
+            })
+
+            const data = await res.json()
+            if (!res.ok) {
+                throw new Error(data.error || "Video analysis failed")
+            }
+
+            const analysis = data.analysis || {}
+            setUploadResult(analysis)
+
+            if (analysis.processed_video_url) {
+                setProcessedVideo(analysis.processed_video_url)
+            }
+            if (analysis.saliency_map) {
+                setSaliencyMap(analysis.saliency_map)
+            }
+            if (analysis.saliency_frames) {
+                setSaliencyFrames(analysis.saliency_frames)
+            }
+            if (analysis.explanation) {
+                setExplanation(analysis.explanation)
+            }
+
+            localStorage.setItem("photo_analysis_results", JSON.stringify({
+                frames: analysis.saliency_frames || [],
+                explanation: analysis.explanation || null,
+                saliencyMap: analysis.saliency_map || null,
+            }))
+
+            setUploadStatus("Analysis complete")
+            setUploadProgress(100)
+
+            if (analysis.anomalies && analysis.anomalies.length > 0) {
+                toast.success("Anomalies detected. Check the alerts panel.")
+            } else {
+                toast.success("Video analysis complete.")
+            }
+        } catch (error: any) {
+            setUploadStatus("Analysis failed")
+            toast.error(error.message || "Failed to analyze video")
+        } finally {
+            setIsUploading(false)
+        }
+    }
+
     return (
         <div className="min-h-screen bg-background">
             {/* Navigation Component */}
@@ -263,9 +343,10 @@ export default function UserDashboard() {
                         </div>
 
                         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-                            <TabsList className="grid w-full grid-cols-3">
+                            <TabsList className="grid w-full grid-cols-4">
                                 <TabsTrigger value="heatmap">Dashboard</TabsTrigger>
                                 <TabsTrigger value="predictions">Predictions</TabsTrigger>
+                                <TabsTrigger value="upload">Upload & Analyze</TabsTrigger>
                                 <TabsTrigger value="crowd-analysis">Crowd Analysis</TabsTrigger>
                             </TabsList>
 
@@ -561,6 +642,162 @@ export default function UserDashboard() {
                                         </div>
                                     </CardContent>
                                 </Card>
+                            </TabsContent>
+
+                            {/* Upload & Analyze Tab */}
+                            <TabsContent value="upload" className="space-y-6">
+                                <Card>
+                                    <CardHeader>
+                                        <CardTitle className="flex items-center space-x-2">
+                                            <Upload className="h-5 w-5" />
+                                            <span>Upload Video for AI Analysis</span>
+                                        </CardTitle>
+                                        <CardDescription>
+                                            Upload a real crowd video for XAI heatmaps and optional anomaly detection.
+                                        </CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="space-y-4">
+                                        <div className="grid md:grid-cols-2 gap-4">
+                                            <div className="space-y-2">
+                                                <Label htmlFor="video-upload">Video File</Label>
+                                                <Input
+                                                    id="video-upload"
+                                                    type="file"
+                                                    accept="video/*"
+                                                    onChange={handleUploadFileChange}
+                                                />
+                                                <p className="text-xs text-muted-foreground">{previewStats}</p>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label htmlFor="zone-select">Zone</Label>
+                                                <select
+                                                    id="zone-select"
+                                                    value={uploadZoneId}
+                                                    onChange={(e) => setUploadZoneId(e.target.value)}
+                                                    className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                                                >
+                                                    <option value="food_court">Food Court</option>
+                                                    <option value="parking">Parking</option>
+                                                    <option value="main_stage">Main Stage</option>
+                                                    <option value="testing">Testing</option>
+                                                </select>
+                                                <p className="text-xs text-muted-foreground">
+                                                    Use <strong>Testing</strong> for fire/anomaly demos.
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center justify-between rounded-md border border-border/60 p-3">
+                                            <div>
+                                                <p className="font-medium text-sm">Run anomaly detection (Gemini)</p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    Uses real AI analysis for fire/violence anomalies (requires GEMINI_API_KEY).
+                                                </p>
+                                            </div>
+                                            <input
+                                                type="checkbox"
+                                                checked={detectAnomalies}
+                                                onChange={(e) => setDetectAnomalies(e.target.checked)}
+                                                className="h-4 w-4"
+                                            />
+                                        </div>
+
+                                        <div className="flex items-center gap-3">
+                                            <Button onClick={handleAnalyzeUpload} disabled={isUploading}>
+                                                {isUploading ? "Analyzing..." : "Start Analysis"}
+                                            </Button>
+                                            <span className="text-sm text-muted-foreground">{uploadStatus}</span>
+                                        </div>
+
+                                        {isUploading && (
+                                            <div>
+                                                <Progress value={uploadProgress} className="h-2" />
+                                            </div>
+                                        )}
+                                    </CardContent>
+                                </Card>
+
+                                {previewUrl && (
+                                    <Card>
+                                        <CardHeader>
+                                            <CardTitle className="text-base">Uploaded Video Preview</CardTitle>
+                                        </CardHeader>
+                                        <CardContent>
+                                            <video src={previewUrl} controls className="w-full rounded-md border" />
+                                        </CardContent>
+                                    </Card>
+                                )}
+
+                                {processedVideo && (
+                                    <Card>
+                                        <CardHeader>
+                                            <CardTitle className="text-base">Processed Video Output</CardTitle>
+                                        </CardHeader>
+                                        <CardContent>
+                                            <video
+                                                src={`http://localhost:5000${processedVideo}`}
+                                                controls
+                                                className="w-full rounded-md border"
+                                            />
+                                        </CardContent>
+                                    </Card>
+                                )}
+
+                                {(saliencyMap || saliencyFrames.length > 0) && (
+                                    <Card>
+                                        <CardHeader>
+                                            <CardTitle className="text-base">XAI Heatmaps</CardTitle>
+                                        </CardHeader>
+                                        <CardContent>
+                                            {saliencyFrames.length > 0 ? (
+                                                <div className="grid grid-cols-2 gap-2">
+                                                    {saliencyFrames.map((frame, idx) => (
+                                                        <div key={idx} className="relative aspect-video rounded-lg overflow-hidden border bg-black/5">
+                                                            <img src={`http://localhost:5000${frame}`} alt={`Saliency Frame ${idx + 1}`} className="object-cover w-full h-full" />
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <div className="relative aspect-video rounded-lg overflow-hidden border bg-black/5">
+                                                    <img src={`http://localhost:5000${saliencyMap}`} alt="Saliency Map" className="object-cover w-full h-full" />
+                                                </div>
+                                            )}
+                                            {explanation && (
+                                                <div className="mt-3 text-sm text-muted-foreground">
+                                                    {explanation}
+                                                </div>
+                                            )}
+                                        </CardContent>
+                                    </Card>
+                                )}
+
+                                {uploadResult?.anomalies?.length > 0 && (
+                                    <Card>
+                                        <CardHeader>
+                                            <CardTitle className="text-base text-destructive">Detected Anomalies</CardTitle>
+                                        </CardHeader>
+                                        <CardContent className="space-y-3">
+                                            {uploadResult.anomalies.map((anomaly: any, idx: number) => (
+                                                <div key={idx} className="rounded-md border border-destructive/40 p-3">
+                                                    <div className="flex items-center justify-between">
+                                                        <span className="font-medium">{anomaly.type}</span>
+                                                        <Badge variant="destructive">{anomaly.confidence || "?"}%</Badge>
+                                                    </div>
+                                                    <p className="text-sm text-muted-foreground mt-1">{anomaly.description}</p>
+                                                    {anomaly.video_timestamp && (
+                                                        <p className="text-xs text-muted-foreground mt-1">Timestamp: {anomaly.video_timestamp}</p>
+                                                    )}
+                                                </div>
+                                            ))}
+                                            <Button
+                                                variant="outline"
+                                                onClick={() => window.open("/dashboard/responder?type=fire", "_blank")}
+                                            >
+                                                Open Fire Responder Dashboard
+                                            </Button>
+                                        </CardContent>
+                                    </Card>
+                                )}
                             </TabsContent>
 
                             {/* Crowd Analysis Tab (Replaced Video Upload) */}
