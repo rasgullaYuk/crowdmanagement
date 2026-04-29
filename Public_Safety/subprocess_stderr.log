@@ -1,0 +1,8 @@
+DEBUG: run_analysis.py started
+2025-12-02 15:29:34.346322: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2025-12-02 15:29:37.574599: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+WARNING:tensorflow:From C:\Users\pavit\anaconda3\Lib\site-packages\tf_keras\src\losses.py:2976: The name tf.losses.sparse_softmax_cross_entropy is deprecated. Please use tf.compat.v1.losses.sparse_softmax_cross_entropy instead.
+
+2025-12-02 15:29:44.828190: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: SSE3 SSE4.1 SSE4.2 AVX AVX2 AVX512F AVX512_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+RESULT:{"found_persons": [], "processed_video_url": "/uploads/processed_dd811ffb.mp4", "timestamp": "2025-12-02T09:59:47.334198Z", "crowd_count": 0, "saliency_map": "/static/saliency_maps/saliency_food_court_618b1a86_0.jpg", "saliency_frames": ["/static/saliency_maps/saliency_food_court_618b1a86_0.jpg"], "explanation": "No significant crowd density detected. Model attention remains diffuse."}

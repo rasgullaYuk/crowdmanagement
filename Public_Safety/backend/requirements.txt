@@ -1,0 +1,8 @@
+flask
+flask-cors
+twilio
+werkzeug<3.0.0
+flasgger
+google-generativeai
+python-dotenv
+opencv-python
