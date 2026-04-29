@@ -1,5 +1,22 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { DatabaseService } from "@/lib/database"
+import { DatabaseService, isMissingSupabaseConfigError } from "@/lib/database"
+
+const handleApiError = (context: string, error: unknown) => {
+  console.error(context, error)
+
+  if (isMissingSupabaseConfigError(error)) {
+    return NextResponse.json(
+      {
+        error: "Supabase configuration is missing",
+        code: "SUPABASE_CONFIG_MISSING",
+        missing: error.missingKeys,
+      },
+      { status: 503 },
+    )
+  }
+
+  return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -15,8 +32,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ lostPersons })
   } catch (error) {
-    console.error("Error fetching lost persons:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    return handleApiError("Error fetching lost persons:", error)
   }
 }
 
@@ -32,7 +48,6 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ lostPerson }, { status: 201 })
   } catch (error) {
-    console.error("Error creating lost person report:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    return handleApiError("Error creating lost person report:", error)
   }
 }
