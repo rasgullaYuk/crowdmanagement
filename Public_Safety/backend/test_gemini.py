@@ -8,7 +8,9 @@ except ImportError:
     print("Library google.generativeai NOT installed.")
     sys.exit(1)
 
-key = "AIzaSyBdtYLpUucxwys-2KIHELwKT6OQPb7VWL0"
+key = (os.getenv("GEMINI_API_KEY") or "").strip()
+if not key:
+    raise SystemExit("Missing GEMINI_API_KEY. Set it in your environment before running this script.")
 print(f"Testing key: {key[:5]}...")
 
 try:

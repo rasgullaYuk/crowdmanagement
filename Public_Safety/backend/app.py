@@ -74,37 +74,30 @@ LOST_PERSONS = []
 FOUND_MATCHES = []
 
 # Gemini API Key Management
-GEMINI_KEYS = [
-    "AIzaSyDf85wdvRbpfi1BV9bO6iOSA962NDTpR78",  # Working key
-]
+def _load_gemini_keys():
+    keys = []
+    primary_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if primary_key:
+        keys.append(primary_key)
+
+    raw_pool = os.getenv("GEMINI_API_KEYS", "")
+    for key in [k.strip() for k in raw_pool.split(",") if k.strip()]:
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
+GEMINI_KEYS = _load_gemini_keys()
 CURRENT_KEY_INDEX = 0
 
+
 def get_gemini_key():
-    """
-    Get the next available Gemini API key from the pool.
-    Rotates through keys to distribute load.
-    """
+    """Return the next Gemini key from environment variables only."""
     global CURRENT_KEY_INDEX, GEMINI_KEYS
-    
-    # Try to load more keys from env or file if not already loaded
-    if len(GEMINI_KEYS) == 1:
-        env_key = os.getenv("GEMINI_API_KEY")
-        if env_key and env_key not in GEMINI_KEYS:
-            GEMINI_KEYS.append(env_key)
-            
-        key_files = ["gemini_key.txt", "../gemini_key.txt", "backend/gemini_key.txt"]
-        for kf in key_files:
-            if os.path.exists(kf):
-                try:
-                    with open(kf, "r") as f:
-                        file_key = f.read().strip()
-                    if file_key and "PASTE" not in file_key and file_key not in GEMINI_KEYS:
-                        GEMINI_KEYS.append(file_key)
-                except:
-                    pass
-    
-    # Round-robin selection
-    key = GEMINI_KEYS[CURRENT_KEY_INDEX]
+    GEMINI_KEYS = _load_gemini_keys()
+    if not GEMINI_KEYS:
+        return None
+    key = GEMINI_KEYS[CURRENT_KEY_INDEX % len(GEMINI_KEYS)]
     CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_KEYS)
     return key
 
@@ -689,41 +682,6 @@ def send_anomaly_alert(zone_id, anomaly_type, description):
             print(f"Failed to send SMS to {responder['name']}: {e}")
 
 
-
-# Gemini API Key Management
-GEMINI_KEYS = [
-    "AIzaSyCNO8wZhRmBCKLaLxNGY3XrFxvVUWg-5Fw",  # User provided key
-]
-CURRENT_KEY_INDEX = 0
-
-def get_gemini_key():
-    """
-    Get the next available Gemini API key from the pool.
-    Rotates through keys to distribute load.
-    """
-    global CURRENT_KEY_INDEX, GEMINI_KEYS
-    
-    # Try to load more keys from env or file if not already loaded
-    if len(GEMINI_KEYS) == 1:
-        env_key = os.getenv("GEMINI_API_KEY")
-        if env_key and env_key not in GEMINI_KEYS:
-            GEMINI_KEYS.append(env_key)
-            
-        key_files = ["gemini_key.txt", "../gemini_key.txt", "backend/gemini_key.txt"]
-        for kf in key_files:
-            if os.path.exists(kf):
-                try:
-                    with open(kf, "r") as f:
-                        file_key = f.read().strip()
-                    if file_key and "PASTE" not in file_key and file_key not in GEMINI_KEYS:
-                        GEMINI_KEYS.append(file_key)
-                except:
-                    pass
-    
-    # Round-robin selection
-    key = GEMINI_KEYS[CURRENT_KEY_INDEX]
-    CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_KEYS)
-    return key
 
 def extract_frame_at_timestamp(video_path, timestamp_str):
     """Extracts a frame from the video at the given timestamp (MM:SS)"""
