@@ -1,10 +1,19 @@
 import google.generativeai as genai
+import os
 
-# Test both keys with the correct model naming
-keys_to_test = [
-    "AIzaSyBdtYLpUucxwys-2KIHELwKT6OQPb7VWL0",
-    "AIzaSyDf85wdvRbpfi1BV9bO6iOSA962NDTpR78"
-]
+# Test keys loaded from environment variables only
+keys_to_test = []
+primary = (os.getenv("GEMINI_API_KEY") or "").strip()
+if primary:
+    keys_to_test.append(primary)
+
+raw_pool = os.getenv("GEMINI_API_KEYS", "")
+for key in [k.strip() for k in raw_pool.split(",") if k.strip()]:
+    if key not in keys_to_test:
+        keys_to_test.append(key)
+
+if not keys_to_test:
+    raise SystemExit("No Gemini keys found. Set GEMINI_API_KEY or GEMINI_API_KEYS in your environment.")
 
 print("Testing Gemini API Keys with correct model names...\n")
 

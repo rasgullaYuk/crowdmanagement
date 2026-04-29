@@ -1,7 +1,9 @@
 import google.generativeai as genai
 import os
 
-key = "AIzaSyBdtYLpUucxwys-2KIHELwKT6OQPb7VWL0"
+key = (os.getenv("GEMINI_API_KEY") or "").strip()
+if not key:
+    raise SystemExit("Missing GEMINI_API_KEY. Set it in your environment before running this script.")
 genai.configure(api_key=key)
 
 try:
