@@ -7,6 +7,16 @@ import os
 from PIL import Image
 import sys
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, '..'))
+WEIGHTS_PATH = os.path.join(PROJECT_ROOT, 'weights.pth')
+MODEL_STATUS = {
+    "loaded": False,
+    "degraded_mode": True,
+    "weights_path": WEIGHTS_PATH,
+    "message": "Model not initialized."
+}
+
 # ==========================================
 # 1. CSRNet ARCHITECTURE (Density Engine)
 # ==========================================
@@ -72,9 +82,6 @@ model = None
 transform = None
 
 try:
-    # Absolute path to weights in root
-    WEIGHTS_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'weights.pth'))
-    
     if os.path.exists(WEIGHTS_PATH):
         model = CSRNet()
         checkpoint = torch.load(WEIGHTS_PATH, map_location='cpu', weights_only=False)
@@ -94,10 +101,50 @@ try:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         print(f"CSRNet Model Loaded Successfully on {device}")
+        MODEL_STATUS.update({
+            "loaded": True,
+            "degraded_mode": False,
+            "message": f"CSRNet model loaded on {device}."
+        })
     else:
-        print(f"Error: Weights not found at {WEIGHTS_PATH}")
+        warning = (
+            f"WARNING: weights.pth was not found at {WEIGHTS_PATH}. "
+            "Running in degraded mode (streaming model features disabled)."
+        )
+        print(warning)
+        MODEL_STATUS.update({
+            "loaded": False,
+            "degraded_mode": True,
+            "message": warning
+        })
 except Exception as e:
     print(f"Error loading model: {e}")
+    MODEL_STATUS.update({
+        "loaded": False,
+        "degraded_mode": True,
+        "message": f"Model initialization failed: {e}"
+    })
+
+
+def get_model_status():
+    return dict(MODEL_STATUS)
+
+
+def _stream_status_frame(message):
+    frame = np.zeros((450, 1200, 3), dtype=np.uint8)
+    cv2.putText(frame, "CSRNet Degraded Mode", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 165, 255), 3)
+    cv2.putText(frame, "weights.pth not loaded.", (30, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+    cv2.putText(frame, "Place the model at:", (30, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+    cv2.putText(frame, WEIGHTS_PATH, (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 2)
+    cv2.putText(frame, message[:100], (30, 340), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (150, 200, 255), 2)
+
+    ok, buffer = cv2.imencode('.jpg', frame)
+    if not ok:
+        return
+    yield (
+        b'--frame\r\n'
+        b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n'
+    )
 
 # ==========================================
 # 4. STREAMING GENERATOR
@@ -107,7 +154,9 @@ def generate_crowd_stream(video_path):
     PREDICTION_INTENSITY = 15
 
     if model is None:
-        print("Model not loaded, cannot stream.")
+        message = MODEL_STATUS.get("message", "Model not loaded, cannot stream.")
+        print(message)
+        yield from _stream_status_frame(message)
         return
 
     if not os.path.exists(video_path):
