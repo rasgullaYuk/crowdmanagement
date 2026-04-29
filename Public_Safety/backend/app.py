@@ -3703,11 +3703,35 @@ def get_xai_dashboard():
 
 
 
-if __name__ == '__main__':
+def _env_flag(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
 
+
+def run_backend_server():
+    """Stable backend startup entrypoint (Windows-friendly defaults)."""
     check_supabase_connection()
-    
-    # Initialize 8th Mile event data
     initialize_8th_mile_event()
-    
-    app.run(debug=True, port=5000, threaded=True)
+
+    host = os.getenv('BACKEND_HOST', '127.0.0.1')
+    port = int(os.getenv('BACKEND_PORT', '5000'))
+    debug = _env_flag('BACKEND_DEBUG', False)
+    use_reloader = _env_flag('BACKEND_USE_RELOADER', False)
+
+    safe_print(
+        f"Starting backend on http://{host}:{port} "
+        f"(debug={debug}, reloader={use_reloader})"
+    )
+    app.run(
+        host=host,
+        port=port,
+        debug=debug,
+        use_reloader=use_reloader,
+        threaded=True
+    )
+
+
+if __name__ == '__main__':
+    run_backend_server()

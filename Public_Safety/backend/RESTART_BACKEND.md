@@ -1,38 +1,27 @@
-# URGENT: Backend Restart Required
+# Backend Restart / Stable Start
 
-## The Problem
-Your backend has crashed and is **NOT running**. 
+Use this stable startup command on Windows to avoid Flask reloader/watchdog crashes:
 
-The terminal showing `python app.py` is no longer running the server.
+```powershell
+cd "C:\Users\inchara P\crowdmanagement\Public_Safety\backend"
+.\.venv\Scripts\python.exe run_backend.py
+```
 
-## Solution: Restart Backend
+## Default behavior
 
-### In the terminal running `python app.py`:
+- `debug=False`
+- `use_reloader=False`
+- `host=127.0.0.1`
+- `port=5000`
 
-1. **Check if it's actually running**:
-   - Look at the terminal
-   - If you see just a command prompt (`PS C:\...\backend>`), it's NOT running
+This is intentional for reliable local startup when heavy ML modules are imported.
 
-2. **Start it again**:
-   ```powershell
-   python app.py
-   ```
+## Optional overrides
 
-3. **Wait for this message**:
-   ```
-   * Running on http://127.0.0.1:5000
-   * Restarting with stat
-   ```
-
-4. **Then test upload in DIFFERENT terminal**:
-   ```powershell
-   python test_cs_ground_upload.py
-   ```
-
-## How to Tell If Backend is Running
-
-**Running** = Terminal shows Flask server logs
-**NOT Running** = Terminal just shows command prompt
-
-## Critical!
-The backend MUST be actively running when you test the upload!
+```powershell
+$env:BACKEND_DEBUG="1"
+$env:BACKEND_USE_RELOADER="1"
+$env:BACKEND_HOST="127.0.0.1"
+$env:BACKEND_PORT="5000"
+.\.venv\Scripts\python.exe run_backend.py
+```
