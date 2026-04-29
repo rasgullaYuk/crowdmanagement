@@ -39,3 +39,7 @@ uploads/
 
 backend/venv/
 backend/.venv/
+
+# local demo artifacts
+backend/subprocess_*.log
+weights.pth
