@@ -1,5 +1,24 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { DatabaseService } from "@/lib/database"
+import { DatabaseService, isMissingSupabaseConfigError } from "@/lib/database"
+
+export const dynamic = "force-dynamic"
+
+const handleApiError = (error: unknown) => {
+  console.error("Error updating incident:", error)
+
+  if (isMissingSupabaseConfigError(error)) {
+    return NextResponse.json(
+      {
+        error: "Supabase configuration is missing",
+        code: "SUPABASE_CONFIG_MISSING",
+        missing: error.missingKeys,
+      },
+      { status: 503 },
+    )
+  }
+
+  return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+}
 
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
   try {
@@ -14,7 +33,6 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 
     return NextResponse.json({ incident })
   } catch (error) {
-    console.error("Error updating incident:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    return handleApiError(error)
   }
 }

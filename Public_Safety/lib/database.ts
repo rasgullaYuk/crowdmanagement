@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js"
+import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 
 // Database types
 export interface Event {
@@ -105,11 +105,67 @@ export interface LostPerson {
   updated_at: string
 }
 
-// Initialize Supabase client
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+// Initialize Supabase client lazily so routes can respond gracefully when env is missing.
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-export const supabase = createClient(supabaseUrl, supabaseKey)
+export class MissingSupabaseConfigError extends Error {
+  readonly missingKeys: string[]
+
+  constructor(missingKeys: string[]) {
+    super(`Missing Supabase environment variables: ${missingKeys.join(", ")}`)
+    this.name = "MissingSupabaseConfigError"
+    this.missingKeys = missingKeys
+  }
+}
+
+export const getMissingSupabaseEnvKeys = (): string[] => {
+  const missingKeys: string[] = []
+
+  if (!supabaseUrl) {
+    missingKeys.push("NEXT_PUBLIC_SUPABASE_URL")
+  }
+
+  if (!supabaseKey) {
+    missingKeys.push("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+  }
+
+  return missingKeys
+}
+
+export const isMissingSupabaseConfigError = (error: unknown): error is MissingSupabaseConfigError =>
+  error instanceof MissingSupabaseConfigError
+
+let cachedSupabaseClient: SupabaseClient | null = null
+
+const getSupabaseClient = (): SupabaseClient => {
+  if (cachedSupabaseClient) {
+    return cachedSupabaseClient
+  }
+
+  const missingKeys = getMissingSupabaseEnvKeys()
+  if (missingKeys.length > 0) {
+    throw new MissingSupabaseConfigError(missingKeys)
+  }
+
+  cachedSupabaseClient = createClient(supabaseUrl!, supabaseKey!)
+  return cachedSupabaseClient
+}
+
+const supabaseHandler: ProxyHandler<SupabaseClient> = {
+  get(_target, prop, receiver) {
+    const client = getSupabaseClient()
+    const value = Reflect.get(client, prop, receiver)
+
+    if (typeof value === "function") {
+      return value.bind(client)
+    }
+
+    return value
+  },
+}
+
+export const supabase = new Proxy({} as SupabaseClient, supabaseHandler)
 
 // Database service functions
 export class DatabaseService {
