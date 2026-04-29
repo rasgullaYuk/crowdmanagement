@@ -80,6 +80,22 @@ export default function ResponderDashboard() {
   const [incidents, setIncidents] = useState<any[]>([])
   const [messageText, setMessageText] = useState("")
 
+  const claimIncidentInBackend = async (incidentId: string, status: string = "claimed") => {
+    try {
+      await fetch(`http://localhost:5000/api/anomalies/${incidentId}/claim`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          responder_type: responderType,
+          responder_name: responderTypes[responderType]?.name,
+          status,
+        }),
+      })
+    } catch (e) {
+      console.warn("Failed to persist claim in backend", e)
+    }
+  }
+
   const fetchIncidents = async () => {
     try {
       const res = await fetch('http://localhost:5000/api/anomalies/active')
@@ -91,13 +107,14 @@ export default function ResponderDashboard() {
           severity: a.confidence > 80 ? "high" : "medium",
           status: a.status,
           location: a.location,
-          zone: a.location.toLowerCase().replace(/ /g, '-'),
+          zone_id: a.zone_id || null,
+          zone: (a.zone_id || a.location).toLowerCase().replace(/ /g, '-'),
           description: a.description,
           reportedBy: "AI System",
           timeReported: new Date(a.timestamp || Date.now()).toLocaleTimeString(),
           estimatedTime: "Unknown",
           distance: "Unknown",
-          assignedTo: null,
+          assignedTo: a.assigned_to || a.assignedTo || null,
           image_url: a.image_url || null
         }))
         setIncidents(formatted)
@@ -186,37 +203,80 @@ export default function ResponderDashboard() {
   const handleClaimIncident = (incidentId: string) => {
     setSelectedIncident(incidentId)
     setResponderStatus("responding")
+    claimIncidentInBackend(incidentId, "claimed")
     toast.success("Incident claimed. Status updated to Responding.")
   }
 
   const handleAcceptAndNavigate = async (incident: any) => {
     handleClaimIncident(incident.id)
+    await claimIncidentInBackend(incident.id, "responding")
     setIsNavigating(true)
 
-    const targetName = incident.zone === "testing" ? "Testing Region" :
-      incident.zone === "main-stage" ? "Main Stage" :
-        incident.zone === "food-court" ? "Food Court" :
-          incident.zone === "entrance-b" ? "Entrance" :
-            incident.zone === "parking-c" ? "Parking" :
-              incident.zone === "parking" ? "Parking" :
-                incident.zone === "backstage" ? "Backstage" :
-                  incident.zone === "control-room" ? "Control Room" : "Testing Region"
+    const zoneId = incident.zone_id || incident.zoneId || incident.zone || ""
+    const targetName =
+      zoneId === "testing" || zoneId === "testing-region" ? "Testing Region" :
+        zoneId === "main_stage" || zoneId === "main-stage" ? "Main Stage" :
+          zoneId === "food_court" || zoneId === "food-court" ? "Food Court" :
+            zoneId === "parking" ? "Parking" :
+              zoneId === "control_room" || zoneId === "control-room" ? "Control Room" :
+                zoneId === "vip_area" || zoneId === "vip-area" ? "VIP Area" :
+                  zoneId === "medical_bay" || zoneId === "medical-bay" ? "Medical Bay" :
+                    zoneId === "security_gate" || zoneId === "security-gate" ? "Security Gate" :
+                      zoneId === "entrance" ? "Entrance" :
+                        "Testing Region"
 
     setTargetLocationName(targetName)
 
     try {
-      // Mock fetching avoid zones (high density)
-      // In real app, fetch from /api/zones/density
-      const mockAvoid = ["Food Court"]
+      // Realistic venue coordinates (mirror backend)
+      const NODE_COORDS: Record<string, [number, number]> = {
+        "Entrance": [12.9716, 77.5946],
+        "Security Gate": [12.9726, 77.5951],
+        "Main Stage": [12.9741, 77.5961],
+        "Food Court": [12.9731, 77.5956],
+        "Parking": [12.9706, 77.5941],
+        "Medical Bay": [12.9736, 77.5956],
+        "Testing Region": [12.9746, 77.5951],
+        "Backstage": [12.9751, 77.5966],
+        "VIP Area": [12.9746, 77.5961],
+        "Control Room": [12.9721, 77.5946]
+      }
 
-      // Coordinates for Food Court (mock) - increased radius for visibility
-      const avoidZonesList = [{ lat: 12.9780, lng: 77.5980, radius: 200 }]
+      // Fetch high-density zones from backend (real) and treat them as avoid nodes
+      const zoneIdToNode: Record<string, string> = {
+        food_court: "Food Court",
+        parking: "Parking",
+        main_stage: "Main Stage",
+        testing: "Testing Region"
+      }
+
+      let avoidNodes: string[] = []
+      try {
+        const zres = await fetch("http://localhost:5000/api/realtime/all-zones")
+        if (zres.ok) {
+          const zdata = await zres.json()
+          avoidNodes = (zdata.zones || [])
+            .filter((z: any) => {
+              const lvl = (z.current_analysis?.density_level || "").toLowerCase()
+              return lvl === "high" || lvl === "critical"
+            })
+            .map((z: any) => zoneIdToNode[z.zone_id] || z.zone_name || z.zone_id)
+            .filter((n: string) => n && n !== targetName)
+        }
+      } catch (e) {
+        console.warn("Failed to fetch avoid zones, continuing without avoid list.", e)
+      }
+
+      const avoidZonesList = avoidNodes
+        .map((n) => NODE_COORDS[n])
+        .filter(Boolean)
+        .map((c) => ({ lat: c[0], lng: c[1], radius: 200 }))
       setAvoidZones(avoidZonesList)
 
       console.log("🗺️ Navigation Request:", {
         start: currentLocationName,
         end: targetName,
-        avoid: mockAvoid
+        avoid: avoidNodes
       })
 
       const response = await fetch('http://localhost:5000/api/path/calculate', {
@@ -225,7 +285,7 @@ export default function ResponderDashboard() {
         body: JSON.stringify({
           start: currentLocationName,
           end: targetName,
-          avoid: mockAvoid
+          avoid: avoidNodes
         })
       })
 
@@ -234,21 +294,7 @@ export default function ResponderDashboard() {
 
         console.log("📍 Backend Response:", data)
 
-        // Realistic venue coordinates (within 500m radius - typical large venue)
-        const NODE_COORDS: Record<string, [number, number]> = {
-          "Entrance": [12.9716, 77.5946],
-          "Security Gate": [12.9726, 77.5951],       // 130m from Entrance
-          "Main Stage": [12.9741, 77.5961],          // 300m from Entrance  
-          "Food Court": [12.9731, 77.5956],          // 200m from Entrance (avoid zone)
-          "Parking": [12.9706, 77.5941],             // 150m from Entrance
-          "Medical Bay": [12.9736, 77.5956],         // 250m from Entrance
-          "Testing Region": [12.9746, 77.5951],      // 350m from Entrance (FIRE LOCATION)
-          "Backstage": [12.9751, 77.5966],           // 450m from Entrance
-          "VIP Area": [12.9746, 77.5961],            // 370m from Entrance
-          "Control Room": [12.9721, 77.5946]         // 60m from Entrance
-        }
-
-        const pathCoords = data.path_nodes.map((node: string) => NODE_COORDS[node] || [12.9716, 77.5946])
+        const pathCoords = (data.path_coordinates || []) as [number, number][]
 
         console.log("🛣️ Path Nodes:", data.path_nodes)
         console.log("📌 Path Coordinates:", pathCoords)
@@ -256,7 +302,7 @@ export default function ResponderDashboard() {
 
         // Update all navigation state
         setNavigationPath(pathCoords)
-        setTargetLocationCoords(NODE_COORDS[targetName])
+        setTargetLocationCoords(pathCoords[pathCoords.length - 1] || undefined)
         setInstructions(data.instructions || [])
 
         // Force current location to start node (Entrance)

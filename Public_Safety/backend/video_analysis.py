@@ -3,7 +3,6 @@ import os
 import uuid
 import datetime
 import numpy as np
-from deepface import DeepFace
 from ultralytics import YOLO
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
@@ -74,6 +73,17 @@ def analyze_video_yolo(video_path, zone_id, lost_persons, upload_folder, faces_f
         if not active_lost_persons:
             print("⚠️ No active missing persons to search for. Proceeding with crowd analysis only.")
             # return None # Don't return, continue for crowd analysis
+
+        # DeepFace is optional (TensorFlow/Protobuf conflicts are common on Windows).
+        # If it can't import, we still run crowd + XAI + processed video output for demo.
+        DeepFace = None
+        if active_lost_persons:
+            try:
+                from deepface import DeepFace as _DeepFace  # type: ignore
+                DeepFace = _DeepFace
+            except Exception as e:
+                print(f"⚠️ DeepFace unavailable, skipping face matching. Reason: {e}")
+                DeepFace = None
 
         print(f"📋 Searching for {len(active_lost_persons)} person(s)")
 
@@ -172,7 +182,7 @@ def analyze_video_yolo(video_path, zone_id, lost_persons, upload_folder, faces_f
                 if person_img.size == 0:
                     continue
 
-                # 3. Face Verification (only if we haven't found a match yet or want to re-verify)
+                # 3. Face Verification (optional; skip if DeepFace unavailable)
                 # For efficiency, we could skip if track_id is already 'known'
                 # But to be robust, let's check.
                 
@@ -180,65 +190,56 @@ def analyze_video_yolo(video_path, zone_id, lost_persons, upload_folder, faces_f
                 matched_name = "Unknown"
                 color = (0, 0, 255) # Red for unknown
                 
-                # Save temp crop for DeepFace
-                temp_crop_path = os.path.join(upload_folder, f"temp_crop_{uuid.uuid4().hex[:8]}.jpg")
-                cv2.imwrite(temp_crop_path, person_img)
-                
-                try:
-                    for person in active_lost_persons:
-                        ref_img = os.path.basename(person['image_url'])
-                        ref_path = os.path.join(faces_folder, ref_img)
-                        
-                        if not os.path.exists(ref_path):
-                            continue
-                            
-                        # Use DeepFace to verify
-                        # Enforce detection=False because we already cropped the person, 
-                        # but we still want to find the face inside the person crop.
-                        # Actually, let's use VGG-Face directly
-                        result = DeepFace.verify(
-                            img1_path=temp_crop_path,
-                            img2_path=ref_path,
-                            model_name="VGG-Face",
-                            detector_backend="opencv", # Fast detector
-                            distance_metric="cosine",
-                            enforce_detection=False
-                        )
-                        
-                        if result['verified']:
-                            match_found = True
-                            matched_name = person['name']
-                            confidence = int((1 - result['distance']) * 100)
-                            color = (0, 255, 0) # Green for match
-                            
-                            # Log match
-                            print(f"\n✅ MATCH FOUND: {matched_name} (ID: {track_id}) - {confidence}%")
-                            
-                            # Add to results
-                            match_data = {
-                                "person_id": person['id'],
-                                "zone_id": zone_id,
-                                "confidence": confidence,
-                                "description": f"Found {matched_name}",
-                                "timestamp": str(datetime.timedelta(seconds=int(frame_count/fps))),
-                                "found_at": datetime.datetime.utcnow().isoformat() + "Z",
-                                "found_frame_url": f"/uploads/{output_filename}", # Point to video for now
-                                "image_url": f"/uploads/{output_filename}"
-                            }
-                            
-                            # Avoid duplicates in result list
-                            if not any(m['person_id'] == person['id'] for m in analysis_result['found_persons']):
-                                analysis_result['found_persons'].append(match_data)
-                                FOUND_MATCHES.append(match_data)
-                                person['status'] = 'found'
-                            
-                            break
-                            
-                except Exception as e:
-                    pass
-                finally:
-                    if os.path.exists(temp_crop_path):
-                        os.remove(temp_crop_path)
+                if DeepFace is not None and active_lost_persons:
+                    # Save temp crop for DeepFace
+                    temp_crop_path = os.path.join(upload_folder, f"temp_crop_{uuid.uuid4().hex[:8]}.jpg")
+                    cv2.imwrite(temp_crop_path, person_img)
+                    try:
+                        for person in active_lost_persons:
+                            ref_img = os.path.basename(person['image_url'])
+                            ref_path = os.path.join(faces_folder, ref_img)
+
+                            if not os.path.exists(ref_path):
+                                continue
+
+                            result = DeepFace.verify(
+                                img1_path=temp_crop_path,
+                                img2_path=ref_path,
+                                model_name="VGG-Face",
+                                detector_backend="opencv",
+                                distance_metric="cosine",
+                                enforce_detection=False
+                            )
+
+                            if result.get('verified'):
+                                match_found = True
+                                matched_name = person['name']
+                                confidence = int((1 - result.get('distance', 1)) * 100)
+                                color = (0, 255, 0) # Green for match
+
+                                print(f"\n✅ MATCH FOUND: {matched_name} (ID: {track_id}) - {confidence}%")
+
+                                match_data = {
+                                    "person_id": person['id'],
+                                    "zone_id": zone_id,
+                                    "confidence": confidence,
+                                    "description": f"Found {matched_name}",
+                                    "timestamp": str(datetime.timedelta(seconds=int(frame_count/fps))),
+                                    "found_at": datetime.datetime.utcnow().isoformat() + "Z",
+                                    "found_frame_url": f"/uploads/{output_filename}",
+                                    "image_url": f"/uploads/{output_filename}"
+                                }
+
+                                if not any(m['person_id'] == person['id'] for m in analysis_result.get('found_persons', [])):
+                                    analysis_result['found_persons'].append(match_data)
+                                    FOUND_MATCHES.append(match_data)
+                                    person['status'] = 'found'
+                                break
+                    except Exception:
+                        pass
+                    finally:
+                        if os.path.exists(temp_crop_path):
+                            os.remove(temp_crop_path)
 
                 # Draw Box
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)

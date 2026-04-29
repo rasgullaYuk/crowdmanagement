@@ -1056,13 +1056,19 @@ def analyze_video_with_gemini(video_path, zone_id):
         - crowd_count (integer): Estimated number of people.
         - density_level (string): "Low", "Medium", "High", or "Critical".
         - anomalies (list of objects): List of anomalies. Each object should have:
-            - type (string): "violence", "crowd_behavior", "abandoned_object", "unusual_movement", "gathering", or "other".
+            - type (string): One of:
+              "fire", "smoke", "violence", "panic", "medical_emergency",
+              "crowd_behavior", "abandoned_object", "unusual_movement", "gathering", or "other".
             - description (string): Brief description.
             - timestamp (string): Time of occurrence in "MM:SS" format.
             - confidence (integer): 0-100.
         - found_persons (list of objects): List of found lost persons (if any).
         - description (string): Brief summary of the scene.
         - sentiment (string): "Calm", "Agitated", "Panic", or "Happy".
+
+        IMPORTANT:
+        - If you see flames, fire, smoke, or an evacuation/people running due to danger, you MUST include an anomaly with type "fire" or "smoke".
+        - Only output valid JSON (no markdown, no extra text).
         """
         
         # Force JSON output so parsing is reliable
@@ -2083,6 +2089,50 @@ def upload_video_for_analysis():
                             analysis['anomaly_detection']["status"] = "error"
                             analysis['anomaly_detection']["error"] = gemini_error
 
+                # Persist anomalies so responder dashboard can show real alerts
+                if analysis.get('anomalies'):
+                    zone_name = CAMERA_ENDPOINTS.get(zone_id, {}).get('name', zone_id)
+                    # Prefer an image URL if we have XAI frames; otherwise fall back to processed video
+                    evidence_url = None
+                    if analysis.get('saliency_frames'):
+                        evidence_url = f"http://localhost:5000{analysis['saliency_frames'][0]}"
+                    elif analysis.get('saliency_map'):
+                        evidence_url = f"http://localhost:5000{analysis['saliency_map']}"
+                    elif analysis.get('processed_video_url'):
+                        evidence_url = f"http://localhost:5000{analysis['processed_video_url']}"
+
+                    for a in analysis.get('anomalies', []):
+                        if not isinstance(a, dict):
+                            continue
+                        anomaly_id = str(uuid.uuid4())
+                        confidence = int(a.get('confidence', 75)) if str(a.get('confidence', '')).isdigit() else a.get('confidence', 75)
+                        anomaly = {
+                            "id": anomaly_id,
+                            "type": (a.get('type') or "other"),
+                            "description": (a.get('description') or "Anomaly detected"),
+                            "timestamp": datetime.utcnow().isoformat() + "Z",
+                            "confidence": confidence,
+                            "location": zone_name,
+                            "zone_id": zone_id,
+                            "status": "active",
+                            "severity": "high" if (confidence or 0) > 85 else "medium",
+                            "image_url": evidence_url,
+                            "imageUrl": evidence_url,  # UI fallback
+                            "video_timestamp": a.get("timestamp") or a.get("video_timestamp"),
+                        }
+
+                        # Avoid duplicates (same type+location in last few entries)
+                        recent = PERSISTENT_ANOMALIES[-20:]
+                        duplicate = any(
+                            isinstance(r, dict)
+                            and r.get("type") == anomaly["type"]
+                            and r.get("location") == anomaly["location"]
+                            and r.get("status") == "active"
+                            for r in recent
+                        )
+                        if not duplicate:
+                            PERSISTENT_ANOMALIES.append(anomaly)
+
                 update_zone_history(zone_id, analysis)
                 return jsonify({
                     "message": "Video analysis complete",
@@ -2693,6 +2743,45 @@ def get_active_anomalies():
     # Return all anomalies from persistent storage
     # They already have all required fields: id, type, description, location, timestamp, etc.
     return jsonify(PERSISTENT_ANOMALIES)
+
+
+@app.route('/api/anomalies/<anomaly_id>/claim', methods=['POST'])
+def claim_anomaly(anomaly_id):
+    """
+    Claim/assign an anomaly to a responder (demo in-memory persistence).
+    ---
+    tags:
+      - Responder Management
+    parameters:
+      - name: anomaly_id
+        in: path
+        type: string
+        required: true
+    requestBody:
+      required: false
+    responses:
+      200:
+        description: Updated anomaly
+      404:
+        description: Anomaly not found
+    """
+    payload = request.get_json(silent=True) or {}
+    responder_type = payload.get("responder_type") or payload.get("responderType") or "responder"
+    responder_name = payload.get("responder_name") or payload.get("responderName") or None
+
+    for idx, a in enumerate(PERSISTENT_ANOMALIES):
+        if isinstance(a, dict) and str(a.get("id")) == str(anomaly_id):
+            updated = a.copy()
+            updated["status"] = payload.get("status") or "claimed"
+            updated["assigned_to"] = responder_type
+            updated["assignedTo"] = responder_type  # UI fallback
+            if responder_name:
+                updated["assigned_responder_name"] = responder_name
+            updated["claimed_at"] = datetime.utcnow().isoformat() + "Z"
+            PERSISTENT_ANOMALIES[idx] = updated
+            return jsonify(updated)
+
+    return jsonify({"error": "Anomaly not found", "anomaly_id": anomaly_id}), 404
 
 @app.route('/api/messages', methods=['GET', 'POST'])
 def handle_messages():
@@ -3965,6 +4054,75 @@ def get_upload_status(upload_id):
 from xai_service import generate_xai_dashboard_image
 from io import BytesIO
 
+# Cache XAI dashboard so UI refreshes are instant
+_XAI_CACHE = {
+    "png_bytes": None,
+    "generated_at": None,
+    "video_path": None,
+}
+_XAI_LOCK = threading.Lock()
+_XAI_GENERATING = False
+
+# CSRNet stream source (default: test3.mp4 in project root)
+_STREAM_SOURCE = {
+    "video_path": None,
+    "uploaded_at": None,
+}
+_STREAM_LOCK = threading.Lock()
+
+def _get_stream_video_path():
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    default_path = os.path.join(project_root, 'test3.mp4')
+    with _STREAM_LOCK:
+        vp = _STREAM_SOURCE.get("video_path")
+    return vp if vp and os.path.exists(vp) else default_path
+
+@app.route('/api/crowd-analysis/upload', methods=['POST'])
+def upload_crowd_stream_video():
+    """
+    Upload a video to be used as the Live Crowd Analysis Stream source (CSRNet).
+    ---
+    tags:
+      - Crowd Prediction
+    consumes:
+      - multipart/form-data
+    parameters:
+      - name: video
+        in: formData
+        type: file
+        required: true
+    responses:
+      200:
+        description: Stream source updated
+    """
+    if 'video' not in request.files:
+        return jsonify({"error": "No video file provided"}), 400
+
+    video = request.files['video']
+    if not video or not video.filename:
+        return jsonify({"error": "Empty filename"}), 400
+
+    filename = secure_filename(f"stream_{uuid.uuid4().hex[:8]}_{video.filename}")
+    save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    video.save(save_path)
+
+    with _STREAM_LOCK:
+        _STREAM_SOURCE["video_path"] = save_path
+        _STREAM_SOURCE["uploaded_at"] = datetime.utcnow().isoformat() + "Z"
+
+    # Invalidate XAI cache so /api/xai/test2 regenerates for new stream source
+    with _XAI_LOCK:
+        _XAI_CACHE["png_bytes"] = None
+        _XAI_CACHE["generated_at"] = None
+        _XAI_CACHE["video_path"] = None
+
+    return jsonify({
+        "message": "Stream source updated",
+        "video_url": f"/uploads/{filename}",
+        "source_path": save_path,
+        "note": "Now open the User Dashboard → Crowd Analysis tab (stream + XAI will use this video)."
+    }), 200
+
 @app.route('/uploads/<path:filename>')
 def serve_uploads(filename):
     """Serve uploaded files and XRAI visualizations"""
@@ -3973,9 +4131,7 @@ def serve_uploads(filename):
 @app.route('/api/crowd_analysis_stream')
 def crowd_analysis_stream():
     """Stream the predefined test.mp4 for the Crowd Analysis tab"""
-    # Assuming app.py is in backend/, navigate up to root then to test.mp4
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    video_path = os.path.join(project_root, 'test3.mp4')
+    video_path = _get_stream_video_path()
     return Response(generate_crowd_stream(video_path),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
@@ -3983,14 +4139,36 @@ def crowd_analysis_stream():
 def get_xai_dashboard():
     """Generate and return XAI dashboard for test2.mp4"""
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    video_path = os.path.join(project_root, 'test3.mp4')
+    video_path = _get_stream_video_path()
     weights_path = os.path.join(project_root, 'weights.pth')
-    
-    img_io, error = generate_xai_dashboard_image(video_path, weights_path)
-    if error:
-        return jsonify({'error': error}), 500
-        
-    return send_file(img_io, mimetype='image/png')
+
+    global _XAI_GENERATING
+
+    # Serve cached result if available
+    with _XAI_LOCK:
+        if _XAI_CACHE.get("png_bytes") and _XAI_CACHE.get("video_path") == video_path:
+            return send_file(BytesIO(_XAI_CACHE["png_bytes"]), mimetype='image/png')
+        if _XAI_GENERATING:
+            # Avoid stampede: return a friendly status quickly
+            return jsonify({"status": "generating", "message": "XAI dashboard is generating. Refresh in a few seconds."}), 202
+        _XAI_GENERATING = True
+
+    try:
+        img_io, error = generate_xai_dashboard_image(video_path, weights_path)
+        if error:
+            return jsonify({'error': error}), 500
+
+        png_bytes = img_io.getvalue() if hasattr(img_io, "getvalue") else img_io.read()
+        with _XAI_LOCK:
+            _XAI_CACHE.update({
+                "png_bytes": png_bytes,
+                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "video_path": video_path,
+            })
+        return send_file(BytesIO(png_bytes), mimetype='image/png')
+    finally:
+        with _XAI_LOCK:
+            _XAI_GENERATING = False
 
 
 

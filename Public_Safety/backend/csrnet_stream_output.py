@@ -6,6 +6,13 @@ import cv2
 import os
 from PIL import Image
 import sys
+import time
+
+# Optional: used to download CSRNet weights if missing
+try:
+    import gdown  # type: ignore
+except Exception:
+    gdown = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, '..'))
@@ -82,6 +89,28 @@ model = None
 transform = None
 
 try:
+    if not os.path.exists(WEIGHTS_PATH):
+        # Auto-download weights for local demo if possible
+        if gdown is not None:
+            try:
+                MODEL_STATUS.update({
+                    "loaded": False,
+                    "degraded_mode": True,
+                    "message": f"weights.pth missing. Attempting auto-download to {WEIGHTS_PATH}..."
+                })
+                print(MODEL_STATUS["message"])
+
+                # Pretrained CSRNet weights (ShanghaiTech Part B) from CSRNet-pytorch repo
+                # Source: https://github.com/leeyeehoo/CSRNet-pytorch
+                drive_url = "https://drive.google.com/uc?id=1zKn6YlLW3Z9ocgPbP99oz7r2nC7_TBXK"
+                os.makedirs(os.path.dirname(WEIGHTS_PATH), exist_ok=True)
+                gdown.download(drive_url, WEIGHTS_PATH, quiet=False)
+
+                # Small wait to avoid filesystem race on Windows
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"Auto-download failed: {e}")
+
     if os.path.exists(WEIGHTS_PATH):
         model = CSRNet()
         checkpoint = torch.load(WEIGHTS_PATH, map_location='cpu', weights_only=False)
