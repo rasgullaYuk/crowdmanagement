@@ -934,7 +934,6 @@ def analyze_video_final(video_path, zone_id):
 def analyze_video_with_gemini(video_path, zone_id):
     try:
         import google.generativeai as genai
-        from deepface import DeepFace
         import cv2
         import numpy as np
         
@@ -1023,6 +1022,20 @@ def analyze_video_with_gemini(video_path, zone_id):
                     if frame is not None:
                         # HYBRID: Use DeepFace/OpenCV to detect face and draw bounding box on this frame
                         try:
+                            try:
+                                from deepface import DeepFace
+                            except ModuleNotFoundError:
+                                DeepFace = None
+
+                            if DeepFace is None:
+                                # Demo mode: DeepFace is optional. Save raw frame so the API still returns results.
+                                frame_filename = f"found_{match['person_id']}_{uuid.uuid4().hex[:8]}.jpg"
+                                frame_path = os.path.join(app.config['UPLOAD_FOLDER'], frame_filename)
+                                cv2.imwrite(frame_path, frame)
+                                match['found_frame_url'] = f"/uploads/{frame_filename}"
+                                match['image_url'] = f"/uploads/{frame_filename}"
+                                continue
+
                             # Detect faces in this extracted frame
                             faces = DeepFace.extract_faces(
                                 img_path=frame,
