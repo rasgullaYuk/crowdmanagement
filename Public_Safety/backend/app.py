@@ -46,6 +46,9 @@ def safe_print(*args, **kwargs):
 
 load_dotenv() # Load .env if present
 
+# Process start time (for uptime reporting)
+APP_START_TIME = time.time()
+
 # Global storage for analysis results
 ZONE_ANALYSIS = {}
 MESSAGES = []
@@ -178,6 +181,56 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 FACES_FOLDER = os.path.join(UPLOAD_FOLDER, 'faces')
 if not os.path.exists(FACES_FOLDER):
     os.makedirs(FACES_FOLDER)
+
+def _csrnet_weights_path():
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(backend_dir)
+    return os.path.join(project_root, 'weights.pth')
+
+def _csrnet_weights_status():
+    weights_path = _csrnet_weights_path()
+    exists = os.path.exists(weights_path)
+    return {
+        "name": "CSRNet",
+        "weights_path": weights_path,
+        "weights_present": exists,
+        "ready": exists,
+        "degraded_mode": not exists,
+    }
+
+@app.route('/api/health', methods=['GET'])
+def api_health():
+    """
+    Lightweight service health endpoint
+    ---
+    tags:
+      - Health
+    responses:
+      200:
+        description: API health + model readiness
+    """
+    model = _csrnet_weights_status()
+    overall = "ok" if model["ready"] else "degraded"
+    return jsonify({
+        "status": overall,
+        "api": "ok",
+        "model": model,
+        "uptime_s": int(time.time() - APP_START_TIME),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }), 200
+
+@app.route('/api/health/model', methods=['GET'])
+def model_health():
+    """
+    Model readiness endpoint
+    ---
+    tags:
+      - Health
+    responses:
+      200:
+        description: Model readiness and degraded-mode signal
+    """
+    return jsonify(_csrnet_weights_status()), 200
 
 # Twilio Configuration
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
